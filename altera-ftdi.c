@@ -30,8 +30,12 @@
 #include <stdio.h>
 #include <string.h>
 #include <unistd.h>
+#include <getopt.h>
 #include <stdbool.h>
+#include <alloca.h>
 #include "altera.h"
+
+#include "ioftdi.h"
 
 #ifndef VERSION
 #define VERSION "unrel"
@@ -43,9 +47,6 @@ enum gpio_pin {
 	GPIO_TDI,
 	GPIO_TMS
 };
-static int gpio_pins[4] = {0,0,0,0};
-static int gpio_fds[4] = {0,0,0,0};
-static int gpio_state[4] = {-1,-1,-1,-1};
 static int jtag_hardware_initialized = 0;
 bool trace = false;
 
@@ -53,124 +54,25 @@ bool trace = false;
 #define GPIO_EXPORT_PATH GPIO_PATH "export"
 #define GPIO_UNEXPORT_PATH GPIO_PATH "unexport"
 
-static int gpio_export(int gpionum, int export)
+
+static int initialize_jtag_hardware(unsigned int freq)
 {
-	char *path;
-	FILE *f;
+  int res = IOFtdi_Init(freq);
+  if(!res)
+    jtag_hardware_initialized = 1;
+  else
+    return res;
 
-	if (export) {
-		path = GPIO_EXPORT_PATH;
-	} else {
-		path = GPIO_UNEXPORT_PATH;
-	}
-
-	f = fopen(path, "w");
-	if (!f) {
-		fprintf(stderr, "Could not open gpio path %s\n", path);
-		return 0;
-	}
-
-	fprintf(f, "%d", gpionum);
-	fclose(f);
-
-	return 1;
-}
-
-static int gpio_direction(int gpionum, int out)
-{
-	char path[64];
-	FILE *f;
-
-	snprintf(path, sizeof(path)-1, "%s/gpio%d/direction", GPIO_PATH, gpionum);
-
-	f = fopen(path, "w");
-	if (!f) {
-		fprintf(stderr, "Could not open gpio path %s\n", path);
-		return 0;
-	}
-	fprintf(f, "%s", (out) ? "out" : "in");
-	fclose(f);
-
-	return 1;
-}
-
-static void gpio_set_value(int gpio, int value)
-{
-	int fd = gpio_fds[gpio];
-
-	if (gpio_state[gpio] != value) {
-		write(fd, (value) ? "1" : "0", 1);
-		gpio_state[gpio] = value;
-	}
-}
-
-static int gpio_get_value(int gpio)
-{
-	int fd = gpio_fds[gpio];
-	char val;
-
-	pread(fd, &val, 1, 0);
-	return val == '1';
-}
-
-static int gpio_open(int gpionum)
-{
-	char path[64];
-	int fd;
-
-	snprintf(path, sizeof(path)-1, "%s/gpio%d/value", GPIO_PATH, gpionum);
-
-	fd = open(path, O_RDWR);
-	if (fd < 0) {
-		fprintf(stderr, "Could not open gpio path %s\n", path);
-		return -1;
-	}
-
-	return fd;
-}
-
-static void gpio_close(int fd)
-{
-	close(fd);
-}
-
-static void initialize_jtag_hardware()
-{
-	int i;
-
-	for (i = 0; i < 4; i++) {
-		gpio_export(gpio_pins[i], 1);
-		if (i == GPIO_TDO) {
-			gpio_direction(gpio_pins[i], 0);
-		} else {
-			gpio_direction(gpio_pins[i], 1);
-		}
-		gpio_fds[i] = gpio_open(gpio_pins[i]);
-		if (gpio_fds[i] == -1) return;
-	}
+  return 0;
 }
 
 static void close_jtag_hardware()
 {
-	int i;
-	for (i = 0; i < 4; i++) {
-		gpio_close(gpio_fds[i]);
-		gpio_direction(gpio_pins[i], 0);
-		gpio_export(gpio_pins[i], 0);
-	}
 }
 
 int altera_jtag_io(int tms, int tdi, int read_tdo)
 {
-	int tdo = 0;
-
-	if (!jtag_hardware_initialized)
-	{
-		initialize_jtag_hardware();
-		jtag_hardware_initialized = 1;
-	}
-
-	gpio_set_value(GPIO_TMS, tms);
+/*	gpio_set_value(GPIO_TMS, tms);
 	gpio_set_value(GPIO_TDI, tdi);
 	gpio_set_value(GPIO_TCK, 0);
 	if (read_tdo)
@@ -178,9 +80,13 @@ int altera_jtag_io(int tms, int tdi, int read_tdo)
 		tdo = gpio_get_value(GPIO_TDO);
 	}
 	gpio_set_value(GPIO_TCK, 1);
-	gpio_set_value(GPIO_TCK, 0);
+	gpio_set_value(GPIO_TCK, 0);*/
 
-	return (tdo);
+  // Write to FTDI chip using MPSSE mode
+  // This is inefficient because we often write only one bit per command.
+  // When not reading and TMS is 0, writes are combined to a single byte
+  // before sending.
+  return IOFtdi_txrx_bits(tms, tdi, read_tdo);
 }
 
 void altera_message(char *message_text)
@@ -254,12 +160,12 @@ void usage(const char *progname)
 			"    -h          : show help message\n"
 			"    -v          : show verbose messages\n"
 			"    -i          : show file info only - does not execute any action\n"
+			"    -f<freq>    : set JTAG frequency in kHz\n"
 			"    -a<action>  : specify an action name (Jam STAPL)\n"
 			"    -d<var=val> : initialize variable to specified value (Jam 1.1)\n"
 			"    -d<proc=1>  : enable optional procedure (Jam STAPL)\n"
 			"    -d<proc=0>  : disable recommended procedure (Jam STAPL)\n"
-			"    -r          : don't reset JTAG TAP after use\n"
-			"    -g<gpios>   : set gpio pin numbers, see below\n",
+			"    -r          : don't reset JTAG TAP after use\n",
 			VERSION, progname);
 }
 
@@ -275,8 +181,9 @@ int main(int argc, char **argv)
 	FILE *fp;
 	unsigned char *file_buffer;
 	off_t file_length;
+	unsigned int freq = 600000;
 
-	while ((opt = getopt(argc, argv, "hvia:d:rg:Vt")) != -1) {
+	while ((opt = getopt(argc, argv, "hvif:a:d:rg:Vt")) != -1) {
 		switch (opt) {
 			case 'h':
 				usage(argv[0]);
@@ -290,6 +197,9 @@ int main(int argc, char **argv)
 				break;
 			case 'a':
 				action = optarg;
+				break;
+			case 'f':
+				freq = 1000*strtoul(optarg, NULL, 0);
 				break;
 			case 'd':
 			{
@@ -318,20 +228,6 @@ int main(int argc, char **argv)
 			} break;
 			case 'r':
 				break;
-			case 'g':
-			{
-				int i;
-				char *c;
-				for (i = 0; i < 4; i++) {
-					gpio_pins[i] = strtoul(optarg, &c, 10);
-					if ((i < 3 && *c != ':') || (i == 3 && *c != '\0')) {
-						usage(argv[0]);
-						return EXIT_FAILURE;
-					}
-					optarg = c + 1;
-				}
-			} break;
-				break;
 			case 'V':
 				printf("%s\n", VERSION);
 				return EXIT_SUCCESS;
@@ -350,9 +246,12 @@ int main(int argc, char **argv)
 		return EXIT_FAILURE;
 	}
 
-	if (execute_program && gpio_pins[0] == 0 && gpio_pins[1] == 0) {
-		fprintf(stderr, "No GPIO pins specified\n");
-		return EXIT_FAILURE;
+	if (execute_program) {
+          int res = initialize_jtag_hardware(freq);
+          if(res) {
+            fprintf(stderr, "error opening device, code %d\n", res);
+            return EXIT_FAILURE;
+          }
 	}
 
 	fp = fopen(filename, "rb");
@@ -419,10 +318,10 @@ int main(int argc, char **argv)
 		/* Dump the action table */
 		if (format_version == 2 && action_count > 0) {
 			int i;
-			printf("\nActions available in this file:\n");
+			printf("\n%d Actions available in this file:\n", action_count);
 
 			for (i = 0; i < action_count; i++) {
-				char *action_name = NULL;
+				char *action_name;
 				char *description = NULL;
 				struct altera_procinfo *procedure_list = NULL;
 				struct altera_procinfo *procptr = NULL;
