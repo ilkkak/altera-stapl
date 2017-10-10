@@ -8,13 +8,15 @@ cleaner and old cruft was removed.
 
 Compared to the original Altera sources this has the following new
 features:
-  * uses the generic GPIO interface, thus should be usable with any
-	CPLD/FPGA devices which have their JTAG port connected to GPIOs
-	accessible by the kernel.
   * much cleaner source code
   * GPLv2 license
 
+Modified from Michael Walle's GPIO version to use FTDI FT232H in MPSSE mode
+by Ilkka Kalliomäki. FTDI initialization and buffering routines from xc3sprog.
 
 Authors
 -------
   * Michael Walle <michael.walle@kontron.com>
+  * Uwe Bonnes <bon@elektron.ikp.physik.tu-darmstadt.de>
+  * Dmitry Teytelman
+  * Ilkka Kalliomäki <ilkka.kalliomaki@multitaction.com>
