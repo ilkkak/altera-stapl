@@ -171,9 +171,9 @@ void IOFtdi_settype(int sub_type)
   subtype = sub_type;
 }
 
-int nBits = 0;
-unsigned char tdi_send = 0;
-int nTDIBits = 0;
+static int nBits = 0;
+static unsigned char tdi_send = 0;
+static int nTDIBits = 0;
 
 void buffer_flush() {
   unsigned char buf[3];
